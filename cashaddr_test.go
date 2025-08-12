@@ -1,9 +1,10 @@
 package bchutil
 
 import (
+	"testing"
+
 	"github.com/martinboehm/btcutil"
 	"github.com/martinboehm/btcutil/chaincfg"
-	"testing"
 )
 
 var TestVectorsP2PKH = [][]string{
@@ -148,6 +149,40 @@ func TestCashAddressScriptHash_EncodeAddress(t *testing.T) {
 		t.Error(err)
 	}
 	if addr.String() != "bchreg:ppm2qsznhks23z7629mms6s4cwef74vcwvdp9ptp96" {
+		t.Error("Address decoding error")
+	}
+}
+
+var dataElement3 = []byte{
+	0xdd, 0xc9, 0xc2, 0xaf, 0x18, 0x0d, 0x9e, 0xe3,
+	0x4c, 0x1a, 0x3d, 0x59, 0x39, 0x98, 0xe4, 0x8c,
+	0x68, 0xf1, 0xfb, 0x68, 0xb0, 0x31, 0x2f, 0xc4,
+	0x72, 0x2b, 0x6b, 0x30, 0x88, 0xf7, 0x3c, 0x8d,
+}
+
+func TestCashAddressScriptHash_EncodeAddressP2SH32(t *testing.T) {
+	// Mainnet
+	addr, err := NewCashAddressScriptHash32FromHash(dataElement3, &chaincfg.MainNetParams)
+	if err != nil {
+		t.Error(err)
+	}
+	if addr.String() != "bitcoincash:p0wuns40rqxeac6vrg74jwvcujxx3u0mdzcrzt7ywg4kkvyg7u7g6ukpc9cf2" {
+		t.Error("Address decoding error")
+	}
+	// Testnet
+	addr, err = NewCashAddressScriptHash32FromHash(dataElement3, &chaincfg.TestNet3Params)
+	if err != nil {
+		t.Error(err)
+	}
+	if addr.String() != "bchtest:p0wuns40rqxeac6vrg74jwvcujxx3u0mdzcrzt7ywg4kkvyg7u7g6l3sxatuc" {
+		t.Error("Address decoding error")
+	}
+	// Regtest
+	addr, err = NewCashAddressScriptHash32FromHash(dataElement3, &chaincfg.RegressionNetParams)
+	if err != nil {
+		t.Error(err)
+	}
+	if addr.String() != "bchreg:p0wuns40rqxeac6vrg74jwvcujxx3u0mdzcrzt7ywg4kkvyg7u7g62mzv6uts" {
 		t.Error("Address decoding error")
 	}
 }

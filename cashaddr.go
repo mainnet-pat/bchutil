@@ -1,8 +1,11 @@
 package bchutil
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
+
 	"github.com/martinboehm/btcutil"
 	"github.com/martinboehm/btcutil/chaincfg"
 	"github.com/martinboehm/btcutil/txscript"
@@ -37,8 +40,9 @@ var (
 type AddressType int
 
 const (
-	P2PKH AddressType = 0
-	P2SH  AddressType = 1
+	P2PKH  AddressType = 0
+	P2SH   AddressType = 1
+	P2SH32 AddressType = 1
 )
 
 func init() {
@@ -348,7 +352,7 @@ func CheckDecodeCashAddress(input string) (result []byte, prefix string, t Addre
 	if err != nil {
 		return data, prefix, P2PKH, err
 	}
-	if len(data) != 21 {
+	if len(data) != 21 && len(data) != 33 {
 		return data, prefix, P2PKH, errors.New("Incorrect data length")
 	}
 	switch data[0] {
@@ -356,16 +360,19 @@ func CheckDecodeCashAddress(input string) (result []byte, prefix string, t Addre
 		t = P2PKH
 	case 0x08:
 		t = P2SH
+	case 0x0b:
+		t = P2SH32
+		return data[1:33], prefix, t, nil
 	}
 	return data[1:21], prefix, t, nil
 }
 
 // encodeAddress returns a human-readable payment address given a ripemd160 hash
 // and prefix which encodes the bitcoin cash network and address type.  It is used
-// in both pay-to-pubkey-hash (P2PKH) and pay-to-script-hash (P2SH) address
+// in both pay-to-pubkey-hash (P2PKH) and pay-to-script-hash (P2SH(32)) address
 // encoding.
 func encodeCashAddress(hash160 []byte, prefix string, t AddressType) string {
-	return CheckEncodeCashAddress(hash160[:ripemd160.Size], prefix, t)
+	return CheckEncodeCashAddress(hash160[:], prefix, t)
 }
 
 // DecodeAddress decodes the string encoding of an address and returns
@@ -398,6 +405,13 @@ func DecodeAddress(addr string, defaultNet *chaincfg.Params) (btcutil.Address, e
 			return newCashAddressPubKeyHash(decoded, defaultNet)
 		case P2SH:
 			return newCashAddressScriptHashFromHash(decoded, defaultNet)
+		default:
+			return nil, ErrUnknownAddressType
+		}
+	case sha256.Size: // P2SH32
+		switch typ {
+		case P2SH32:
+			return newCashAddressScriptHash32FromHash(decoded, defaultNet)
 		default:
 			return nil, ErrUnknownAddressType
 		}
@@ -553,6 +567,88 @@ func (a *CashAddressScriptHash) Hash160() *[ripemd160.Size]byte {
 	return &a.hash
 }
 
+// Calculate the hash of hasher over buf.
+func calcHash(buf []byte, hasher hash.Hash) []byte {
+	hasher.Write(buf)
+	return hasher.Sum(nil)
+}
+
+// AddressScriptHash is an Address for a pay-to-script-hash (P2SH)
+// transaction.
+type CashAddressScriptHash32 struct {
+	hash   [sha256.Size]byte
+	prefix string
+}
+
+// NewAddressScriptHash returns a new AddressScriptHash.
+func NewCashAddressScriptHash32(serializedScript []byte, net *chaincfg.Params) (*CashAddressScriptHash32, error) {
+	scriptHash := calcHash(calcHash(serializedScript, sha256.New()), sha256.New())
+	return newCashAddressScriptHash32FromHash(scriptHash, net)
+}
+
+// NewAddressScriptHashFromHash returns a new AddressScriptHash.  scriptHash
+// must be 32 bytes.
+func NewCashAddressScriptHash32FromHash(scriptHash []byte, net *chaincfg.Params) (*CashAddressScriptHash32, error) {
+	return newCashAddressScriptHash32FromHash(scriptHash, net)
+}
+
+// newAddressScriptHashFromHash is the internal API to create a script hash
+// address with a known leading identifier byte for a network, rather than
+// looking it up through its parameters.  This is useful when creating a new
+// address structure from a string encoding where the identifer byte is already
+// known.
+func newCashAddressScriptHash32FromHash(scriptHash []byte, net *chaincfg.Params) (*CashAddressScriptHash32, error) {
+	// Check for a valid script hash length.
+	if len(scriptHash) != sha256.Size {
+		return nil, errors.New("scriptHash must be 32 bytes")
+	}
+
+	pre, ok := Prefixes[net.Name]
+	if !ok {
+		return nil, errors.New("unknown network parameters")
+	}
+
+	addr := &CashAddressScriptHash32{prefix: pre}
+	copy(addr.hash[:], scriptHash)
+	return addr, nil
+}
+
+// EncodeAddress returns the string encoding of a pay-to-script-hash
+// address.  Part of the Address interface.
+func (a *CashAddressScriptHash32) EncodeAddress() string {
+	return encodeCashAddress(a.hash[:], a.prefix, P2SH32)
+}
+
+// ScriptAddress returns the bytes to be included in a txout script to pay
+// to a script hash.  Part of the Address interface.
+func (a *CashAddressScriptHash32) ScriptAddress() []byte {
+	return a.hash[:]
+}
+
+// IsForNet returns whether or not the pay-to-script-hash address is associated
+// with the passed bitcoin cash network.
+func (a *CashAddressScriptHash32) IsForNet(net *chaincfg.Params) bool {
+	pre, ok := Prefixes[net.Name]
+	if !ok {
+		return false
+	}
+	return pre == a.prefix
+}
+
+// String returns a human-readable string for the pay-to-script-hash address.
+// This is equivalent to calling EncodeAddress, but is provided so the type can
+// be used as a fmt.Stringer.
+func (a *CashAddressScriptHash32) String() string {
+	return a.EncodeAddress()
+}
+
+// Hash256 returns the underlying array of the script hash.  This can be useful
+// when an array is more appropiate than a slice (for example, when used as map
+// keys).
+func (a *CashAddressScriptHash32) Hash256() *[sha256.Size]byte {
+	return &a.hash
+}
+
 // PayToAddrScript creates a new script to pay a transaction output to a the
 // specified address.
 func cashPayToAddrScript(addr btcutil.Address) ([]byte, error) {
@@ -570,6 +666,12 @@ func cashPayToAddrScript(addr btcutil.Address) ([]byte, error) {
 			return nil, errors.New(nilAddrErrStr)
 		}
 		return payToScriptHashScript(addr.ScriptAddress())
+
+	case *CashAddressScriptHash32:
+		if addr == nil {
+			return nil, errors.New(nilAddrErrStr)
+		}
+		return payToScriptHash32Script(addr.ScriptAddress())
 	}
 	return nil, fmt.Errorf("unable to generate payment script for unsupported "+
 		"address type %T", addr)
@@ -591,6 +693,13 @@ func payToScriptHashScript(scriptHash []byte) ([]byte, error) {
 		AddOp(txscript.OP_EQUAL).Script()
 }
 
+// payToScriptHash32Script creates a new script to pay a transaction output to a
+// 32 bytes script hash. It is expected that the input is a valid hash.
+func payToScriptHash32Script(scriptHash32 []byte) ([]byte, error) {
+	return txscript.NewScriptBuilder().AddOp(txscript.OP_HASH256).AddData(scriptHash32).
+		AddOp(txscript.OP_EQUAL).Script()
+}
+
 // ExtractPkScriptAddrs returns the type of script, addresses and required
 // signatures associated with the passed PkScript.  Note that it only works for
 // 'standard' transaction script types.  Any data such as public keys which are
@@ -600,6 +709,8 @@ func ExtractPkScriptAddrs(pkScript []byte, chainParams *chaincfg.Params) (btcuti
 	// parse.
 	if len(pkScript) == 1+1+20+1 && pkScript[0] == 0xa9 && pkScript[1] == 0x14 && pkScript[22] == 0x87 {
 		return NewCashAddressScriptHashFromHash(pkScript[2:22], chainParams)
+	} else if len(pkScript) == 1+1+32+1 && pkScript[0] == 0xaa && pkScript[1] == 0x20 && pkScript[34] == 0x87 {
+		return NewCashAddressScriptHash32FromHash(pkScript[2:34], chainParams)
 	} else if len(pkScript) == 1+1+1+20+1+1 && pkScript[0] == 0x76 && pkScript[1] == 0xa9 && pkScript[2] == 0x14 && pkScript[23] == 0x88 && pkScript[24] == 0xac {
 		return NewCashAddressPubKeyHash(pkScript[3:23], chainParams)
 	}
@@ -647,7 +758,7 @@ func convertBits(data data, fromBits uint, tobits uint, pad bool) (data, error) 
 
 func packAddressData(addrType AddressType, addrHash data) (data, error) {
 	// Pack addr data with version byte.
-	if addrType != P2PKH && addrType != P2SH {
+	if addrType != P2PKH && addrType != P2SH && addrType != P2SH32 {
 		return data{}, errors.New("invalid addrtype")
 	}
 	versionByte := uint(addrType) << 3
